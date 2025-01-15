@@ -8,6 +8,15 @@ import re
 parar_download = False
 baixados = []
 nao_baixados = []
+todos_os_videos = []
+
+def exibir_mensagem(tipo, titulo, mensagem):
+    if tipo == "info":
+        messagebox.showinfo(titulo, mensagem)
+    elif tipo == "warning":
+        messagebox.showwarning(titulo, mensagem)
+    elif tipo == "error":
+        messagebox.showerror(titulo, mensagem)
 
 def hook_progresso(d):
     global parar_download
@@ -33,11 +42,10 @@ def hook_progresso(d):
         progresso_individual["value"] = 100
 
 def baixar_midia(url, pasta_destino, formato, playlist):
-    global baixados, nao_baixados, parar_download
-
+    global baixados, nao_baixados, parar_download, todos_os_videos
     opcoes = {
         'outtmpl': os.path.join(pasta_destino, '%(playlist_title)s/%(title)s.%(ext)s'),
-        'noplaylist': not playlist, 
+        'noplaylist': not playlist,
         'nocheckcertificate': True,
         'progress_hooks': [hook_progresso],
     }
@@ -56,15 +64,24 @@ def baixar_midia(url, pasta_destino, formato, playlist):
 
     try:
         with YoutubeDL(opcoes) as ydl:
-            info = ydl.extract_info(url, download=False)
-            entries = info.get('entries', [info])  # Lista de vídeos ou único vídeo
-            total_videos = len(entries) if isinstance(entries, list) else 1
+            try:
+                info = ydl.extract_info(url, download=False)
+                entries = info.get('entries', [info]) if 'entries' in info else [info]
+            except Exception as e:
+                print(f"Erro ao obter informações da playlist: {e}")
+                exibir_mensagem("error", "Erro", f"Erro ao obter informações da playlist: {e}")
+                return
 
-            nao_baixados = [{'title': entry['title'], 'webpage_url': entry['webpage_url']} for entry in entries]
+            total_videos = len(entries)
+
+            for entry in entries:
+                nao_baixados.append({'title': entry.get('title', 'Sem título'), 'webpage_url': entry.get('webpage_url', '')})
+                todos_os_videos.append({'title': entry.get('title', 'Sem título'), 'webpage_url': entry.get('webpage_url', '')})
 
             for index, entry in enumerate(entries, start=1):
                 if parar_download:
                     break
+
                 try:
                     progresso_playlist["value"] = (index / total_videos) * 100
                     janela.update_idletasks()
@@ -72,54 +89,124 @@ def baixar_midia(url, pasta_destino, formato, playlist):
                     ydl.download([entry['webpage_url']])
 
                     baixados.append(entry['title'])
-
-                    nao_baixados = [item for item in nao_baixados if item['title'] != entry['title']]
+                    nao_baixados = [
+                        video for video in nao_baixados 
+                        if video['title'] != entry['title']
+                    ]
 
                 except Exception as e:
-                    print(f"Erro ao baixar {entry['title']}: {e}")
-                    pass
+                    print(f"Erro ao baixar {entry.get('title', 'Sem título')}: {e}")
+                    continue 
 
         if parar_download:
-            messagebox.showinfo("Interrompido", "O download foi interrompido pelo usuário.")
+            exibir_mensagem("info", "Interrompido", "O download foi interrompido pelo usuário.")
         else:
-            messagebox.showinfo("Sucesso", "Download concluído!")
+            exibir_mensagem("info", "Sucesso", "Download concluído!")
 
     except Exception as e:
-        messagebox.showerror("Erro", f"Erro ao baixar: {e}")
+        exibir_mensagem("error", "Erro", f"Erro ao processar a playlist: {e}")
 
     progresso_individual["value"] = 0
     progresso_playlist["value"] = 0
     botao_download.config(state="normal")
 
+    gerar_relatorio(pasta_destino)
+
 def gerar_relatorio(pasta_destino):
     global baixados, nao_baixados
 
     relatorio_path = os.path.join(pasta_destino, "relatorio_download.txt")
-    with open(relatorio_path, "w", encoding="utf-8") as relatorio:
-        relatorio.write("Vídeos Baixados:\n")
-        relatorio.write("\n".join(baixados) + "\n\n")
-        relatorio.write("Vídeos Não Baixados (Título e Link):\n")
-        for item in nao_baixados:
-            relatorio.write(f"{item['title']} - {item['webpage_url']}\n")
+    videos_baixados_atuais = set(baixados)
+    videos_nao_baixados_atuais = set(
+        (video['title'], video['webpage_url']) for video in nao_baixados
+    )
 
-    messagebox.showinfo("Relatório Gerado", f"Relatório salvo em: {relatorio_path}")
+    try:
+        if os.path.exists(relatorio_path):
+            with open(relatorio_path, "r", encoding="utf-8") as relatorio:
+                linhas = relatorio.readlines()
+
+            lendo_nao_baixados = False
+            lendo_baixados = False
+            for linha in linhas:
+                linha = linha.strip()
+                if "Vídeos Baixados" in linha:
+                    lendo_baixados = True
+                    lendo_nao_baixados = False
+                    continue
+                if "Vídeos Não Baixados" in linha:
+                    lendo_nao_baixados = True
+                    lendo_baixados = False
+                    continue
+                if lendo_baixados and linha != "":
+                    videos_baixados_atuais.add(linha)
+                if lendo_nao_baixados and " | " in linha:
+                    title, url = linha.split(" | ", 1)
+                    videos_nao_baixados_atuais.add((title, url))
+    except Exception as e:
+        print(f"Erro ao carregar relatório existente: {e}")
+
+    videos_nao_baixados_atuais = {
+        (title, url) for title, url in videos_nao_baixados_atuais
+        if title not in videos_baixados_atuais
+    }
+
+    try:
+        with open(relatorio_path, "w", encoding="utf-8") as relatorio:
+            relatorio.write("Vídeos Baixados:\n")
+            relatorio.write("\n".join(sorted(videos_baixados_atuais)) + "\n\n")
+            relatorio.write("Vídeos Não Baixados (Título | Link):\n")
+            for title, url in sorted(videos_nao_baixados_atuais):
+                relatorio.write(f"{title} | {url}\n")
+    except Exception as e:
+        print(f"Erro ao gerar relatório: {e}")
+
+    print(f"Relatório atualizado em: {relatorio_path}")
 
 def selecionar_pasta():
     pasta = filedialog.askdirectory()
     pasta_var.set(pasta)
 
-def gerar_relatorio(pasta_destino):
-    global baixados, nao_baixados
+def validacoes_iniciais(url, pasta_destino, relatorio=False, caminho_relatorio=None):
+    if not relatorio:
+        if not url.startswith("http"):
+            exibir_mensagem("warning", "URL inválida", "A URL informada é inválida!")
+            return False
 
-    relatorio_path = os.path.join(pasta_destino, "relatorio_download.txt")
-    with open(relatorio_path, "w", encoding="utf-8") as relatorio:
-        relatorio.write("Vídeos Baixados:\n")
-        relatorio.write("\n".join(baixados) + "\n\n")
-        relatorio.write("Vídeos Não Baixados (Título - Link):\n")
-        for item in nao_baixados:
-            relatorio.write(f"{item['title']} - {item['webpage_url']}\n")
+    if not pasta_destino:
+        exibir_mensagem("warning", "Campos obrigatórios", "É obrigatório preencher a pasta de destino!")
+        return False
 
-    messagebox.showinfo("Relatório Gerado", f"Relatório salvo em: {relatorio_path}")
+    if relatorio:
+        if not caminho_relatorio:  
+            exibir_mensagem("warning", "Arquivo inválido", "Selecione um arquivo de relatório!")
+            return False
+
+    return True
+
+def iniciar_download():
+    global parar_download, baixados, nao_baixados
+
+    url = url_var.get().strip()
+    formato = formato_var.get()
+    playlist = playlist_var.get() == "Sim"
+    pasta_destino = pasta_var.get()
+
+    if not validacoes_iniciais(url, pasta_destino):
+        return
+
+    progresso_individual["value"] = 0
+    progresso_playlist["value"] = 0
+    baixados = []
+    nao_baixados = []
+
+    botao_download.config(state="disabled")
+
+    threading.Thread(target=baixar_midia, args=(url, pasta_destino, formato, playlist), daemon=True).start()
+
+def parar_execucao():
+    global parar_download
+    parar_download = True
 
 def carregar_e_processar_relatorio():
     global parar_download
@@ -132,14 +219,7 @@ def carregar_e_processar_relatorio():
     if not validacoes_iniciais('', pasta_destino, True, caminho_relatorio):
         return
 
-    if not caminho_relatorio:
-        return
-
-    parar_download = False
     threading.Thread(target=processar_relatorio, args=(caminho_relatorio, pasta_destino, formato, playlist), daemon=True).start()
-
-    gerar_relatorio(pasta_destino)
-
 
 def processar_relatorio(caminho_relatorio, pasta_destino, formato, playlist):
     global parar_download
@@ -160,8 +240,8 @@ def processar_relatorio(caminho_relatorio, pasta_destino, formato, playlist):
                 elif "Vídeos Não Baixados" in linha:
                     lendo_nao_baixados = True
                     continue
-                elif lendo_nao_baixados and " - " in linha:
-                    title, url = linha.split(" - ", 1)
+                elif lendo_nao_baixados and " | " in linha:
+                    title, url = linha.split(" | ", 1)
                     nao_baixados.append({'title': title, 'webpage_url': url})
                 elif not lendo_nao_baixados and linha:
                     baixados.append(linha)
@@ -176,11 +256,9 @@ def processar_relatorio(caminho_relatorio, pasta_destino, formato, playlist):
                 break
 
             try:
-                progresso_playlist["value"] = (index / total_videos) * 100
-                janela.update_idletasks()
-
+                progresso_percentual = (index / total_videos) * 100
+                atualizar_progresso(progresso_playlist, progresso_percentual)
                 baixar_midia(item['webpage_url'], pasta_destino, formato, playlist)
-
                 baixados.append(item['title'])
                 nao_baixados.remove(item)
 
@@ -188,71 +266,23 @@ def processar_relatorio(caminho_relatorio, pasta_destino, formato, playlist):
                 print(f"Erro ao baixar {item['title']}: {e}")
                 pass
 
-        # Atualizando o relatório após os downloads
-        with open(caminho_relatorio, "w", encoding="utf-8") as relatorio:
-            relatorio.write("Vídeos Baixados:\n")
-            relatorio.write("\n".join(set(baixados)) + "\n\n")  # Evita duplicados
-            relatorio.write("Vídeos Não Baixados (Título - Link):\n")
-            for item in nao_baixados:
-                relatorio.write(f"{item['title']} - {item['webpage_url']}\n")
-
-        # Exibindo mensagem após todo o processo
-        if parar_download:
-            messagebox.showinfo("Interrompido", "O download foi interrompido pelo usuário.")
-        else:
-            messagebox.showinfo("Sucesso", "Reprocessamento concluído!")
+        mensagem = "Download foi interrompido pelo usuário." if parar_download else "Reprocessamento concluído!"
+        messagebox.showinfo("Status", mensagem)
 
     except Exception as e:
         messagebox.showerror("Erro", f"Erro ao processar relatório: {e}")
 
-    progresso_individual["value"] = 0
-    progresso_playlist["value"] = 0
+    atualizar_progresso(progresso_individual, 0)
+    atualizar_progresso(progresso_playlist, 0)
     botao_download.config(state="normal")
-
-def validacoes_iniciais(url, pasta_destino, relatorio=False, caminho_relatorio=None):
-    if not relatorio:
-        if not url.startswith("http"):
-            messagebox.showwarning("URL inválida", "A URL informada é inválida!")
-            return False
-
-    if not pasta_destino:
-        messagebox.showwarning("Campos obrigatórios", "É obrigatório preencher a pasta de destino!")
-        return False
-
-    if relatorio:
-        if not caminho_relatorio:  
-            messagebox.showwarning("Arquivo inválido", "Selecione um arquivo de relatório!")
-            return False
-
-    return True
-
-def iniciar_download():
-    global parar_download, baixados, nao_baixados
-
-    url = url_var.get().strip()
-    formato = formato_var.get()
-    playlist = playlist_var.get() == "Sim"
-    pasta_destino = pasta_var.get()
-
-    if not validacoes_iniciais(url, pasta_destino):
-        return
-
-    progresso_individual["value"] = 0
-    progresso_playlist["value"] = 0
-    parar_download = False
-    baixados = []
-    nao_baixados = []
-
-    botao_download.config(state="disabled")
-
-    threading.Thread(target=baixar_midia, args=(url, pasta_destino, formato, playlist), daemon=True).start()
-
     gerar_relatorio(pasta_destino)
 
-
-def parar_execucao():
-    global parar_download
-    parar_download = True
+def atualizar_progresso(progresso_barra, percentual):
+    try:
+        progresso_barra["value"] = percentual
+        janela.update_idletasks()
+    except ValueError:
+        progresso_barra["value"] = 0
 
 janela = Tk()
 janela.title("Downloader de Mídia")
